@@ -570,10 +570,10 @@ class GroupTools(BaseTool):
     
     def _get_group_scope(self, group_type: int) -> str:
         """Get group scope from groupType value."""
-        if group_type & 0x00000002:  # ADS_GROUP_TYPE_DOMAIN_LOCAL_GROUP
-            return "DomainLocal"
-        elif group_type & 0x00000004:  # ADS_GROUP_TYPE_GLOBAL_GROUP
+        if group_type & 0x00000002:  # ADS_GROUP_TYPE_GLOBAL_GROUP  
             return "Global"
+        elif group_type & 0x00000004:  # ADS_GROUP_TYPE_DOMAIN_LOCAL_GROUP
+            return "DomainLocal"
         elif group_type & 0x00000008:  # ADS_GROUP_TYPE_UNIVERSAL_GROUP
             return "Universal"
         else:

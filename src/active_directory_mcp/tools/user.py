@@ -183,7 +183,8 @@ class UserTools(BaseTool):
         try:
             # Determine OU
             if ou is None:
-                ou = self.ldap.ad_config.organizational_units.users_ou
+                # Default to CN=Users under base DN if organizational_units not configured
+                ou = f"CN=Users,{self.ldap.ad_config.base_dn}"
             
             # Build DN
             user_dn = f"CN={first_name} {last_name},{ou}"

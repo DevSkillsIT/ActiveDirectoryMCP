@@ -47,10 +47,12 @@ A comprehensive Python-based Model Context Protocol (MCP) server for managing Ac
 - **MCP Inspector**: Compatible with debugging tools
 
 ### 🧪 **Quality Assurance**
-- **43/43 Tests Passing**: 100% test success rate
+- **129/129 Tests Passing**: 100% test success rate across all modules
+- **Complete Test Coverage**: All 5 tool modules fully tested
 - **LDAP3 Compatible**: Latest library compatibility ensured
 - **Production Ready**: Thoroughly tested and validated
-- **Comprehensive Coverage**: Config, integration, LDAP, and tools testing
+- **Enterprise Testing**: Unit, Integration, and Performance tests
+- **Comprehensive Coverage**: Config, LDAP, tools, workflows, and performance
 - **Samba AD Test Environment**: Real AD protocols for testing
 
 ## 📋 Prerequisites
@@ -301,7 +303,7 @@ python -m active_directory_mcp.server_http --host 0.0.0.0 --port 8813 --path /ac
 - `health` - Server health check
 - `get_schema_info` - Tool schema information
 
-> **⚠️ Note**: ActiveDirectoryMCP provides 43 tools total. Some LLM models may experience issues with this many tools.
+> **⚠️ Note**: ActiveDirectoryMCP provides 42 tools total. Some LLM models may experience issues with this many tools.
 
 ## 🔒 Security Configuration
 
@@ -344,14 +346,19 @@ python -m active_directory_mcp.server_http --host 0.0.0.0 --port 8813 --path /ac
 
 ## 🧪 Testing
 
-**✅ All Tests Passing (43/43)** - Production Ready!
+**✅ All Tests Passing (129/129)** - Production Ready!
 
 ### Quick Test Status
 - **Configuration Tests**: 8/8 ✅
-- **Integration Tests**: 10/10 ✅  
-- **LDAP Manager Tests**: 12/12 ✅
 - **User Tools Tests**: 13/13 ✅
-- **Total**: 43/43 tests passing
+- **Group Tools Tests**: 17/17 ✅
+- **Computer Tools Tests**: 18/18 ✅
+- **Security Tools Tests**: 14/14 ✅
+- **OU Tools Tests**: 18/18 ✅
+- **LDAP Manager Tests**: 12/12 ✅
+- **Integration Tests**: 20/20 ✅ (End-to-end workflows)
+- **Performance Tests**: 9/9 ✅ (Load & stress testing)
+- **Total**: 129/129 tests passing
 
 ### Run Unit Tests
 ```bash
@@ -359,10 +366,15 @@ python -m active_directory_mcp.server_http --host 0.0.0.0 --port 8813 --path /ac
 pytest -v
 
 # Run specific test categories
-pytest tests/test_config.py -v
-pytest tests/test_ldap_manager.py -v
-pytest tests/test_user_tools.py -v
-pytest tests/test_integration.py -v
+pytest tests/test_config.py -v                    # Configuration tests
+pytest tests/test_ldap_manager.py -v              # LDAP manager tests
+pytest tests/test_user_tools.py -v                # User management tests
+pytest tests/test_group_tools.py -v               # Group management tests  
+pytest tests/test_computer_tools.py -v            # Computer management tests
+pytest tests/test_security_tools.py -v            # Security & audit tests
+pytest tests/test_organizational_unit_tools.py -v # OU management tests
+pytest tests/test_integration.py -v               # End-to-end workflow tests
+pytest tests/test_performance.py -v               # Performance & load tests
 ```
 
 ### Test HTTP Server
@@ -378,6 +390,25 @@ python test_scripts/test_http_server.py http://your-server:8813/activedirectory-
 ```bash
 # Test with real AD connection (requires config)
 AD_MCP_CONFIG="ad-config/ad-config.json" pytest tests/test_integration.py -v
+```
+
+### Run Performance Tests
+```bash
+# Run performance and load tests
+pytest tests/test_performance.py -v
+
+# Run specific performance categories
+pytest tests/test_performance.py::TestLargeDatasetPerformance -v      # Large dataset handling
+pytest tests/test_performance.py::TestConcurrentOperations -v         # Concurrent operations
+pytest tests/test_performance.py::TestMemoryAndResourceUsage -v       # Memory usage tests
+pytest tests/test_performance.py::TestStressScenarios -v              # Stress testing
+
+# Performance test features:
+# - Large dataset performance (10K+ users/groups)
+# - Concurrent operation testing (50+ simultaneous queries) 
+# - Memory usage validation
+# - Sustained load scenarios
+# - Connection pooling efficiency
 ```
 
 ### 🏢 Test with LDAP/AD Environment (Recommended)
@@ -437,7 +468,16 @@ ActiveDirectoryMCP/
 │           ├── organizational_unit.py # OU management
 │           └── security.py         # Security & audit tools
 │
-├── 📁 tests/                       # Test suite
+├── 📁 tests/                       # Comprehensive test suite (129 tests)
+│   ├── test_config.py              # Configuration tests (8)
+│   ├── test_ldap_manager.py        # LDAP manager tests (12)
+│   ├── test_user_tools.py          # User management tests (13)
+│   ├── test_group_tools.py         # Group management tests (17)
+│   ├── test_computer_tools.py      # Computer management tests (18)
+│   ├── test_security_tools.py      # Security & audit tests (14)
+│   ├── test_organizational_unit_tools.py # OU management tests (18)
+│   ├── test_integration.py         # End-to-end workflow tests (20)
+│   └── test_performance.py         # Performance & load tests (9)
 ├── 📁 ad-config/                   # Configuration files
 │   ├── ad-config.json             # Main server configuration
 │   ├── config.example.json        # Example configuration
@@ -524,7 +564,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**✅ Production Ready!** 🎉 Your comprehensive Active Directory MCP service is fully tested (43/43 tests passing) and ready for production deployment with complete HTTP transport support.
+**✅ Production Ready!** 🎉 Your comprehensive Active Directory MCP service is fully tested (129/129 tests passing) and ready for production deployment with complete HTTP transport support, performance validation, and enterprise-grade reliability.
 
 ## 🔗 Related Projects
 

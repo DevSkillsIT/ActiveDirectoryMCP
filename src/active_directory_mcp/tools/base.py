@@ -3,6 +3,7 @@
 import json
 from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from mcp.types import TextContent as Content
 from ldap3.core.exceptions import LDAPException
@@ -24,6 +25,17 @@ class BaseTool(ABC):
         self.ldap = ldap_manager
         self.logger = get_logger(self.__class__.__name__)
     
+    def _serialize_datetime(self, obj):
+        """Helper function to serialize datetime objects."""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, dict):
+            return {key: self._serialize_datetime(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._serialize_datetime(item) for item in obj]
+        else:
+            return obj
+    
     def _format_response(self, data: Any, operation: str = "operation") -> List[Content]:
         """
         Format response data for MCP.
@@ -36,12 +48,15 @@ class BaseTool(ABC):
             List of MCP content objects
         """
         try:
-            if isinstance(data, dict):
-                formatted_data = json.dumps(data, indent=2, ensure_ascii=False)
-            elif isinstance(data, list):
-                formatted_data = json.dumps(data, indent=2, ensure_ascii=False)
+            # Serialize datetime objects before JSON conversion
+            serialized_data = self._serialize_datetime(data)
+            
+            if isinstance(serialized_data, dict):
+                formatted_data = json.dumps(serialized_data, indent=2, ensure_ascii=False)
+            elif isinstance(serialized_data, list):
+                formatted_data = json.dumps(serialized_data, indent=2, ensure_ascii=False)
             else:
-                formatted_data = str(data)
+                formatted_data = str(serialized_data)
             
             return [Content(type="text", text=formatted_data)]
             
