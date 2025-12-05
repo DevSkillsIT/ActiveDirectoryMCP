@@ -579,10 +579,21 @@ class ActiveDirectoryMCPHTTPServer:
 
         @self.mcp.tool(description="Health check for Active Directory MCP server")
         def health():
+            """
+            Perform a real health check of the MCP server and LDAP connection.
+
+            This performs an actual LDAP search to verify the connection is working,
+            not just checking if the socket appears open.
+
+            Returns:
+                - status: 'ok', 'degraded', or 'error'
+                - ldap_connection: Real connection status based on actual LDAP operation
+                - connection_stats: Detailed statistics about connection health
+            """
             health_info = {
                 "status": "ok",
                 "server": "ActiveDirectoryMCP-HTTP",
-                "version": "0.2.0",
+                "version": "0.2.1",
                 "timestamp": datetime.now().isoformat(),
                 "ldap_connection": "unknown"
             }
@@ -595,15 +606,41 @@ class ActiveDirectoryMCPHTTPServer:
                     "domain": self.security_manager.domain
                 }
 
-            # Test LDAP connection
+            # Test LDAP connection with REAL search operation
             try:
                 connection_info = self.ldap_manager.test_connection()
-                health_info["ldap_connection"] = "connected" if connection_info.get('connected') else "disconnected"
+
+                # Check if search test passed (not just socket open)
+                if connection_info.get('search_test'):
+                    health_info["ldap_connection"] = "connected"
+                    health_info["ldap_verified"] = True
+                elif connection_info.get('connected'):
+                    health_info["ldap_connection"] = "connected_unverified"
+                    health_info["ldap_verified"] = False
+                    health_info["status"] = "degraded"
+                    health_info["warning"] = "Connection open but search test failed"
+                else:
+                    health_info["ldap_connection"] = "disconnected"
+                    health_info["status"] = "error"
+
                 health_info["ldap_server"] = connection_info.get('server', 'unknown')
+
+                # Add connection statistics
+                try:
+                    stats = self.ldap_manager.get_connection_stats()
+                    health_info["connection_stats"] = {
+                        "seconds_since_last_operation": round(stats.get('seconds_since_last_operation', 0), 1),
+                        "connection_errors": stats.get('connection_errors', 0),
+                        "keepalive_enabled": stats.get('keepalive_enabled', False),
+                        "keepalive_thread_alive": stats.get('keepalive_thread_alive', False)
+                    }
+                except Exception:
+                    pass
+
             except Exception as e:
                 health_info["ldap_connection"] = "error"
                 health_info["ldap_error"] = str(e)
-                health_info["status"] = "degraded"
+                health_info["status"] = "error"
 
             return self._format_response(health_info, "health")
 

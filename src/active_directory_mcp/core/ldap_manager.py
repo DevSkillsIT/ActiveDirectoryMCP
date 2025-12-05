@@ -1,18 +1,116 @@
-"""LDAP connection manager for Active Directory."""
+"""LDAP connection manager for Active Directory.
+
+Enhanced with:
+- Auto-reconnect decorator for all LDAP operations
+- Background keep-alive thread
+- Specific SSL error handling
+- Real connection health checks
+
+Skills IT Soluções em Tecnologia - Connection resilience improvements
+"""
 
 import logging
 import ssl
 import time
+import threading
 from typing import Optional, List, Dict, Any, Union
-from threading import Lock
+from functools import wraps
+from threading import Lock, Event
 
 import ldap3
 from ldap3 import Server, Connection, ALL, SUBTREE, ALL_ATTRIBUTES, ALL_OPERATIONAL_ATTRIBUTES
-from ldap3.core.exceptions import LDAPException, LDAPBindError, LDAPSocketOpenError
+from ldap3.core.exceptions import LDAPException, LDAPBindError, LDAPSocketOpenError, LDAPSocketSendError, LDAPSocketReceiveError
 
 from ..config.models import ActiveDirectoryConfig, SecurityConfig, PerformanceConfig
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# SSL/Socket errors that indicate connection is dead and needs reconnection
+# =============================================================================
+RECONNECTABLE_ERRORS = (
+    LDAPSocketSendError,
+    LDAPSocketReceiveError,
+    LDAPSocketOpenError,
+    ConnectionResetError,
+    BrokenPipeError,
+    OSError,
+)
+
+SSL_ERROR_PATTERNS = [
+    'SSL: BAD_LENGTH',
+    'EOF occurred',
+    'socket sending error',
+    'socket receiving error',
+    'Connection reset',
+    'Broken pipe',
+]
+
+
+def is_reconnectable_error(error: Exception) -> bool:
+    """
+    Check if an error indicates the connection is dead and should be reconnected.
+    
+    Args:
+        error: The exception to check
+        
+    Returns:
+        True if the connection should be invalidated and reconnected
+    """
+    # Check exception type
+    if isinstance(error, RECONNECTABLE_ERRORS):
+        return True
+    
+    # Check error message patterns
+    error_str = str(error).lower()
+    for pattern in SSL_ERROR_PATTERNS:
+        if pattern.lower() in error_str:
+            return True
+    
+    return False
+
+
+def with_reconnect(method):
+    """
+    Decorator that adds automatic reconnection to LDAP operations.
+    
+    If the operation fails with a socket/SSL error, it will:
+    1. Invalidate the current connection
+    2. Establish a new connection
+    3. Retry the operation once
+    
+    This is generic and works with any LDAP client, not specific to any tool.
+    """
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except Exception as e:
+            if is_reconnectable_error(e):
+                logger.warning(f"Connection error in {method.__name__}: {e}. Attempting reconnect...")
+                
+                # Invalidate connection
+                with self._lock:
+                    if self._connection:
+                        try:
+                            self._connection.unbind()
+                        except:
+                            pass
+                    self._connection = None
+                
+                # Reconnect and retry once
+                try:
+                    self.connect()
+                    logger.info(f"Reconnected successfully. Retrying {method.__name__}...")
+                    return method(self, *args, **kwargs)
+                except Exception as retry_error:
+                    logger.error(f"Retry failed for {method.__name__}: {retry_error}")
+                    raise
+            else:
+                # Not a reconnectable error, propagate as-is
+                raise
+    return wrapper
 
 
 class LDAPManager:
@@ -21,6 +119,12 @@ class LDAPManager:
     
     Provides connection pooling, automatic reconnection, and error handling
     for LDAP operations against Active Directory.
+    
+    Features:
+    - Auto-reconnect on socket/SSL errors
+    - Background keep-alive thread
+    - Real health checks with LDAP search
+    - Thread-safe connection management
     """
     
     def __init__(self, 
@@ -43,8 +147,23 @@ class LDAPManager:
         self._server_pool: Optional[List[Server]] = None
         self._lock = Lock()
         
+        # Keep-alive configuration
+        self._keepalive_interval = getattr(performance_config, 'keepalive_interval', 300)  # 5 minutes default
+        self._keepalive_enabled = getattr(performance_config, 'keepalive_enabled', True)
+        self._keepalive_thread: Optional[threading.Thread] = None
+        self._keepalive_stop = Event()
+        
+        # Connection health tracking
+        self._last_successful_operation = time.time()
+        self._connection_errors = 0
+        self._max_connection_errors = 5
+        
         self._setup_servers()
         
+        # Start keep-alive thread if enabled
+        if self._keepalive_enabled:
+            self._start_keepalive()
+    
     def _setup_servers(self) -> None:
         """Setup LDAP servers and server pool."""
         try:
@@ -85,6 +204,74 @@ class LDAPManager:
             logger.error(f"Error setting up LDAP servers: {e}")
             raise
     
+    def _start_keepalive(self) -> None:
+        """Start background keep-alive thread."""
+        if self._keepalive_thread and self._keepalive_thread.is_alive():
+            return
+        
+        self._keepalive_stop.clear()
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop,
+            name="LDAPKeepAlive",
+            daemon=True
+        )
+        self._keepalive_thread.start()
+        logger.info(f"Started LDAP keep-alive thread (interval: {self._keepalive_interval}s)")
+    
+    def _stop_keepalive(self) -> None:
+        """Stop background keep-alive thread."""
+        if self._keepalive_thread:
+            self._keepalive_stop.set()
+            self._keepalive_thread.join(timeout=5)
+            self._keepalive_thread = None
+            logger.info("Stopped LDAP keep-alive thread")
+    
+    def _keepalive_loop(self) -> None:
+        """
+        Background loop that periodically pings the LDAP connection.
+        
+        This prevents the connection from being closed due to inactivity
+        and detects dead connections early.
+        """
+        while not self._keepalive_stop.wait(timeout=self._keepalive_interval):
+            try:
+                if self._connection and self._connection.bound:
+                    # Perform a lightweight search as keep-alive ping
+                    self._connection.search(
+                        search_base=self.ad_config.base_dn,
+                        search_filter='(objectClass=*)',
+                        search_scope=ldap3.BASE,
+                        attributes=['objectClass'],
+                        size_limit=1
+                    )
+                    self._last_successful_operation = time.time()
+                    self._connection_errors = 0
+                    logger.debug("Keep-alive ping successful")
+                else:
+                    # Connection not established, try to connect
+                    logger.debug("Keep-alive: connection not bound, attempting reconnect")
+                    self.connect()
+            except Exception as e:
+                self._connection_errors += 1
+                logger.warning(f"Keep-alive ping failed ({self._connection_errors}/{self._max_connection_errors}): {e}")
+                
+                if is_reconnectable_error(e) or self._connection_errors >= self._max_connection_errors:
+                    # Invalidate and reconnect
+                    with self._lock:
+                        if self._connection:
+                            try:
+                                self._connection.unbind()
+                            except:
+                                pass
+                        self._connection = None
+                    
+                    try:
+                        self.connect()
+                        self._connection_errors = 0
+                        logger.info("Keep-alive: reconnected successfully")
+                    except Exception as reconnect_error:
+                        logger.error(f"Keep-alive: reconnect failed: {reconnect_error}")
+    
     def connect(self) -> Connection:
         """
         Establish LDAP connection with retry logic.
@@ -122,6 +309,8 @@ class LDAPManager:
                             # Test the connection
                             if connection.bind():
                                 self._connection = connection
+                                self._last_successful_operation = time.time()
+                                self._connection_errors = 0
                                 logger.info(f"Successfully connected to {server.host}:{server.port}")
                                 return connection
                             else:
@@ -154,6 +343,9 @@ class LDAPManager:
     
     def disconnect(self) -> None:
         """Disconnect from LDAP server."""
+        # Stop keep-alive first
+        self._stop_keepalive()
+        
         with self._lock:
             if self._connection:
                 try:
@@ -164,6 +356,25 @@ class LDAPManager:
                 finally:
                     self._connection = None
     
+    def _ensure_connection(self) -> Connection:
+        """
+        Ensure we have a valid connection, reconnecting if necessary.
+        
+        Returns:
+            Connection: Active LDAP connection
+        """
+        connection = self.connect()
+        
+        # Check if connection is still alive
+        if not connection.bound:
+            logger.info("Connection lost, reconnecting...")
+            with self._lock:
+                self._connection = None
+            connection = self.connect()
+        
+        return connection
+    
+    @with_reconnect
     def search(self, 
                search_base: str,
                search_filter: str,
@@ -186,20 +397,7 @@ class LDAPManager:
         Raises:
             LDAPException: If search fails
         """
-        connection = self.connect()
-        
-        # Auto-reconnect if connection was lost (thread-safe)
-        try:
-            if not connection.bound:
-                logger.info("Connection lost, reconnecting...")
-                with self._lock:
-                    self._connection = None
-                    connection = self.connect()
-        except Exception as e:
-            logger.warning(f"Connection check failed: {e}, reconnecting...")
-            with self._lock:
-                self._connection = None
-                connection = self.connect()
+        connection = self._ensure_connection()
         
         try:
             logger.debug(f"Searching: base={search_base}, filter={search_filter}")
@@ -250,6 +448,7 @@ class LDAPManager:
                 if not cookie:
                     break
             
+            self._last_successful_operation = time.time()
             logger.debug(f"Search returned {len(entries)} entries")
             return entries
             
@@ -257,6 +456,7 @@ class LDAPManager:
             logger.error(f"Search error: {e}")
             raise
     
+    @with_reconnect
     def add(self, dn: str, attributes: Dict[str, Any]) -> bool:
         """
         Add LDAP entry.
@@ -271,7 +471,7 @@ class LDAPManager:
         Raises:
             LDAPException: If operation fails
         """
-        connection = self.connect()
+        connection = self._ensure_connection()
         
         try:
             logger.debug(f"Adding entry: {dn}")
@@ -279,6 +479,7 @@ class LDAPManager:
             success = connection.add(dn, attributes=attributes)
             
             if success:
+                self._last_successful_operation = time.time()
                 logger.info(f"Successfully added entry: {dn}")
                 return True
             else:
@@ -289,6 +490,7 @@ class LDAPManager:
             logger.error(f"Add error for {dn}: {e}")
             raise
     
+    @with_reconnect
     def modify(self, dn: str, changes: Dict[str, Any]) -> bool:
         """
         Modify LDAP entry.
@@ -303,7 +505,7 @@ class LDAPManager:
         Raises:
             LDAPException: If operation fails
         """
-        connection = self.connect()
+        connection = self._ensure_connection()
         
         try:
             logger.debug(f"Modifying entry: {dn}")
@@ -311,6 +513,7 @@ class LDAPManager:
             success = connection.modify(dn, changes)
             
             if success:
+                self._last_successful_operation = time.time()
                 logger.info(f"Successfully modified entry: {dn}")
                 return True
             else:
@@ -321,6 +524,7 @@ class LDAPManager:
             logger.error(f"Modify error for {dn}: {e}")
             raise
     
+    @with_reconnect
     def delete(self, dn: str) -> bool:
         """
         Delete LDAP entry.
@@ -334,7 +538,7 @@ class LDAPManager:
         Raises:
             LDAPException: If operation fails
         """
-        connection = self.connect()
+        connection = self._ensure_connection()
         
         try:
             logger.debug(f"Deleting entry: {dn}")
@@ -342,6 +546,7 @@ class LDAPManager:
             success = connection.delete(dn)
             
             if success:
+                self._last_successful_operation = time.time()
                 logger.info(f"Successfully deleted entry: {dn}")
                 return True
             else:
@@ -352,6 +557,7 @@ class LDAPManager:
             logger.error(f"Delete error for {dn}: {e}")
             raise
     
+    @with_reconnect
     def move(self, dn: str, new_parent: str) -> bool:
         """
         Move LDAP entry to new parent.
@@ -366,7 +572,7 @@ class LDAPManager:
         Raises:
             LDAPException: If operation fails
         """
-        connection = self.connect()
+        connection = self._ensure_connection()
         
         try:
             logger.debug(f"Moving entry {dn} to {new_parent}")
@@ -374,6 +580,7 @@ class LDAPManager:
             success = connection.modify_dn(dn, new_superior=new_parent)
             
             if success:
+                self._last_successful_operation = time.time()
                 logger.info(f"Successfully moved entry {dn} to {new_parent}")
                 return True
             else:
@@ -388,6 +595,9 @@ class LDAPManager:
         """
         Test LDAP connection and return server information.
         
+        Performs a real LDAP search to validate the connection is working,
+        not just checking if the socket is open.
+        
         Returns:
             Dictionary with connection test results
         """
@@ -401,31 +611,64 @@ class LDAPManager:
                 'port': connection.server.port,
                 'ssl': connection.server.ssl,
                 'bound': connection.bound,
-                'user': connection.user
+                'user': connection.user,
+                'last_successful_operation': self._last_successful_operation,
+                'connection_errors': self._connection_errors,
+                'keepalive_enabled': self._keepalive_enabled,
+                'keepalive_interval': self._keepalive_interval,
             }
             
-            # Try a simple search to test functionality
+            # Perform a REAL search to test functionality (not just socket state)
             try:
                 connection.search(
                     search_base=self.ad_config.base_dn,
                     search_filter='(objectClass=*)',
                     search_scope=ldap3.BASE,
-                    attributes=['namingContexts']
+                    attributes=['objectClass'],
+                    size_limit=1
                 )
                 server_info['search_test'] = True
+                server_info['search_test_time'] = time.time()
+                self._last_successful_operation = time.time()
+                self._connection_errors = 0
             except Exception as e:
                 server_info['search_test'] = False
                 server_info['search_error'] = str(e)
+                
+                # If search fails, connection is likely dead
+                if is_reconnectable_error(e):
+                    server_info['connection_status'] = 'stale'
+                    server_info['recommendation'] = 'Connection appears stale, will auto-reconnect on next operation'
             
-            logger.info("Connection test successful")
+            logger.info("Connection test completed")
             return server_info
             
         except Exception as e:
             logger.error(f"Connection test failed: {e}")
             return {
                 'connected': False,
-                'error': str(e)
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'is_reconnectable': is_reconnectable_error(e)
             }
+    
+    def get_connection_stats(self) -> Dict[str, Any]:
+        """
+        Get connection statistics and health information.
+        
+        Returns:
+            Dictionary with connection statistics
+        """
+        return {
+            'connected': self._connection is not None and self._connection.bound,
+            'last_successful_operation': self._last_successful_operation,
+            'seconds_since_last_operation': time.time() - self._last_successful_operation,
+            'connection_errors': self._connection_errors,
+            'max_connection_errors': self._max_connection_errors,
+            'keepalive_enabled': self._keepalive_enabled,
+            'keepalive_interval': self._keepalive_interval,
+            'keepalive_thread_alive': self._keepalive_thread.is_alive() if self._keepalive_thread else False,
+        }
     
     def __enter__(self):
         """Context manager entry."""
