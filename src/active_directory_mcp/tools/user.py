@@ -401,7 +401,8 @@ class UserTools(BaseTool):
         return self._set_user_account_control(username, 514, "disable")  # 514 = Disabled account
     
     def reset_password(self, username: str, new_password: Optional[str] = None, 
-                      force_change: bool = True) -> List[Dict[str, Any]]:
+                      force_change: bool = True,
+                      password_never_expires: bool = False) -> List[Dict[str, Any]]:
         """
         Reset user password.
         
@@ -409,16 +410,22 @@ class UserTools(BaseTool):
             username: Username to reset password for
             new_password: New password (if None, generates random password)
             force_change: Force user to change password at next logon
+            password_never_expires: Set password to never expire (adds DONT_EXPIRE_PASSWORD flag)
             
         Returns:
             List of MCP content objects with result
+            
+        Note:
+            force_change and password_never_expires are mutually exclusive in practice.
+            If password_never_expires is True, force_change will be ignored as the password
+            will be set to never expire.
         """
         try:
-            # Find user DN
+            # Find user DN and current userAccountControl
             user_results = self.ldap.search(
                 search_base=self.ldap.ad_config.base_dn,
                 search_filter=f"(&(objectClass=user)(sAMAccountName={self._escape_ldap_filter(username)}))",
-                attributes=['sAMAccountName']
+                attributes=['sAMAccountName', 'userAccountControl']
             )
             
             if not user_results:
@@ -429,6 +436,10 @@ class UserTools(BaseTool):
                 }, "reset_password")
             
             user_dn = user_results[0]['dn']
+            current_uac = self._get_attr(user_results[0]['attributes'], 'userAccountControl', 512)
+            if isinstance(current_uac, list):
+                current_uac = current_uac[0] if current_uac else 512
+            current_uac = int(current_uac)
             
             # Generate password if not provided
             if new_password is None:
@@ -439,8 +450,17 @@ class UserTools(BaseTool):
             # Set new password
             self._set_user_password(user_dn, new_password)
             
-            # Force password change if requested
-            if force_change:
+            # Handle password expiration settings
+            if password_never_expires:
+                # Add DONT_EXPIRE_PASSWORD flag (65536) to userAccountControl
+                # Also ensure account is enabled (remove disabled flag 2 if present)
+                new_uac = (current_uac | 65536) & ~2  # Add never expire, remove disabled
+                self.ldap.modify(user_dn, {
+                    'userAccountControl': [(MODIFY_REPLACE, [new_uac])]
+                })
+                self.logger.info(f"Set password never expires for user: {username} (UAC: {current_uac} -> {new_uac})")
+            elif force_change:
+                # Force password change at next logon by setting pwdLastSet to 0
                 self.ldap.modify(user_dn, {
                     'pwdLastSet': [(MODIFY_REPLACE, [0])]
                 })
@@ -453,13 +473,15 @@ class UserTools(BaseTool):
                     "username": username,
                     "dn": user_dn,
                     "new_password": new_password,
-                    "force_change": force_change
+                    "force_change": force_change and not password_never_expires,
+                    "password_never_expires": password_never_expires
                 }
             )
             
         except Exception as e:
             return self._handle_ldap_error(e, "reset_password", username)
-    
+
+
     def get_user_groups(self, username: str) -> List[Dict[str, Any]]:
         """
         Get groups that a user is member of.
