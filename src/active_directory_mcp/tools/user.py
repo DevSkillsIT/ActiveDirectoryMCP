@@ -279,7 +279,7 @@ class UserTools(BaseTool):
             user_results = self.ldap.search(
                 search_base=self.ldap.ad_config.base_dn,
                 search_filter=f"(&(objectClass=user)(sAMAccountName={self._escape_ldap_filter(username)}))",
-                attributes=['dn']
+                attributes=['sAMAccountName']
             )
             
             if not user_results:
@@ -343,7 +343,7 @@ class UserTools(BaseTool):
             user_results = self.ldap.search(
                 search_base=self.ldap.ad_config.base_dn,
                 search_filter=f"(&(objectClass=user)(sAMAccountName={self._escape_ldap_filter(username)}))",
-                attributes=['dn']
+                attributes=['sAMAccountName']
             )
             
             if not user_results:
@@ -418,7 +418,7 @@ class UserTools(BaseTool):
             user_results = self.ldap.search(
                 search_base=self.ldap.ad_config.base_dn,
                 search_filter=f"(&(objectClass=user)(sAMAccountName={self._escape_ldap_filter(username)}))",
-                attributes=['dn']
+                attributes=['sAMAccountName']
             )
             
             if not user_results:
@@ -531,7 +531,7 @@ class UserTools(BaseTool):
             user_results = self.ldap.search(
                 search_base=self.ldap.ad_config.base_dn,
                 search_filter=f"(&(objectClass=user)(sAMAccountName={self._escape_ldap_filter(username)}))",
-                attributes=['dn']
+                attributes=['sAMAccountName']
             )
             
             if not user_results:

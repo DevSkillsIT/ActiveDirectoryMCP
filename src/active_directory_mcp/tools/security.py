@@ -109,9 +109,9 @@ class SecurityTools(BaseTool):
                         
                         group_info = {
                             'dn': group_entry['dn'],
-                            'sam_account_name': group_self._get_attr(entry['attributes'], 'sAMAccountName', ''),
-                            'display_name': group_self._get_attr(entry['attributes'], 'displayName', ''),
-                            'description': group_self._get_attr(entry['attributes'], 'description', ''),
+                            'sam_account_name': self._get_attr(group_entry['attributes'], 'sAMAccountName', ''),
+                            'display_name': self._get_attr(group_entry['attributes'], 'displayName', ''),
+                            'description': self._get_attr(group_entry['attributes'], 'description', ''),
                             'member_count': len(members),
                             'members': members[:10],  # First 10 members
                             'object_sid': object_sid
@@ -204,7 +204,7 @@ class SecurityTools(BaseTool):
                     continue
             
             # Check account status
-            uac = user_self._get_attr(entry['attributes'], 'userAccountControl', 0)
+            uac = self._get_attr(user_entry['attributes'], 'userAccountControl', 0)
             account_status = {
                 'enabled': not bool(uac & 0x0002),  # ACCOUNTDISABLE
                 'locked': bool(uac & 0x0010),       # LOCKOUT
@@ -216,7 +216,7 @@ class SecurityTools(BaseTool):
             user_permissions = {
                 'username': username,
                 'user_dn': user_entry['dn'],
-                'display_name': user_self._get_attr(entry['attributes'], 'displayName', ''),
+                'display_name': self._get_attr(user_entry['attributes'], 'displayName', ''),
                 'account_status': account_status,
                 'total_groups': len(member_of),
                 'privileged_groups_count': len(privileged_groups),
@@ -272,8 +272,8 @@ class SecurityTools(BaseTool):
                 is_inactive = False
                 if last_logon == 0 or last_logon is None:
                     is_inactive = True
-                elif hasattr(last_logon, "tzinfo"):  # datetime object
-                    cutoff_date = datetime.now(last_logon.tzinfo) - timedelta(days=days)
+                elif isinstance(last_logon, datetime):  # datetime object
+                    cutoff_date = datetime.now(last_logon.tzinfo) if last_logon.tzinfo else datetime.now() - timedelta(days=days)
                     is_inactive = last_logon < cutoff_date
                 elif isinstance(last_logon, int) and last_logon < cutoff_filetime:
                     is_inactive = True
@@ -286,7 +286,7 @@ class SecurityTools(BaseTool):
                         'sam_account_name': self._get_attr(entry['attributes'], 'sAMAccountName', ''),
                         'display_name': self._get_attr(entry['attributes'], 'displayName', ''),
                         'mail': self._get_attr(entry['attributes'], 'mail', ''),
-                        'last_logon': self._convert_filetime_to_datetime(last_logon) if (last_logon and not isinstance(last_logon, bool) and (hasattr(last_logon, "tzinfo") or last_logon > 0)) else 'Never',
+                        'last_logon': self._convert_filetime_to_datetime(last_logon) if (last_logon and not isinstance(last_logon, bool) and (isinstance(last_logon, datetime) or last_logon > 0)) else 'Never',
                         'days_inactive': self._get_days_since_last_logon({'lastLogon': [last_logon]}),
                         'enabled': not bool(uac & 0x0002),
                         'group_count': len(member_of),
@@ -435,7 +435,7 @@ class SecurityTools(BaseTool):
                             
                             if user_results:
                                 user_entry = user_results[0]
-                                uac = user_self._get_attr(entry['attributes'], 'userAccountControl', 0)
+                                uac = self._get_attr(user_entry['attributes'], 'userAccountControl', 0)
                                 
                                 # Check for security issues
                                 security_issues = []
@@ -453,22 +453,22 @@ class SecurityTools(BaseTool):
                                     security_issues.append("Password not required")
                                 
                                 # Check last logon
-                                last_logon = user_self._get_attr(entry['attributes'], 'lastLogon', 0)
+                                last_logon = self._get_attr(user_entry['attributes'], 'lastLogon', 0)
                                 days_since_logon = self._get_days_since_last_logon({'lastLogon': [last_logon]})
                                 if days_since_logon and days_since_logon > 90:
                                     security_issues.append(f"No logon for {days_since_logon} days")
                                 
                                 admin_info = {
                                     'dn': user_entry['dn'],
-                                    'sam_account_name': user_self._get_attr(entry['attributes'], 'sAMAccountName', ''),
-                                    'display_name': user_self._get_attr(entry['attributes'], 'displayName', ''),
-                                    'mail': user_self._get_attr(entry['attributes'], 'mail', ''),
+                                    'sam_account_name': self._get_attr(user_entry['attributes'], 'sAMAccountName', ''),
+                                    'display_name': self._get_attr(user_entry['attributes'], 'displayName', ''),
+                                    'mail': self._get_attr(user_entry['attributes'], 'mail', ''),
                                     'privileged_group': group_name,
                                     'enabled': not bool(uac & 0x0002),
-                                    'last_logon': self._convert_filetime_to_datetime(last_logon) if (last_logon and not isinstance(last_logon, bool) and (hasattr(last_logon, "tzinfo") or last_logon > 0)) else 'Never',
+                                    'last_logon': self._convert_filetime_to_datetime(last_logon) if (last_logon and not isinstance(last_logon, bool) and (isinstance(last_logon, datetime) or last_logon > 0)) else 'Never',
                                     'days_since_logon': days_since_logon,
-                                    'logon_count': user_self._get_attr(entry['attributes'], 'logonCount', 0),
-                                    'bad_pwd_count': user_self._get_attr(entry['attributes'], 'badPwdCount', 0),
+                                    'logon_count': self._get_attr(user_entry['attributes'], 'logonCount', 0),
+                                    'bad_pwd_count': self._get_attr(user_entry['attributes'], 'badPwdCount', 0),
                                     'security_issues': security_issues,
                                     'risk_level': self._calculate_admin_risk_level(security_issues, days_since_logon)
                                 }
@@ -615,7 +615,7 @@ class SecurityTools(BaseTool):
     def _convert_filetime_to_datetime(self, filetime) -> datetime:
         """Convert Windows FILETIME to datetime. Handles both int and datetime."""
         # If already a datetime, return as-is
-        if hasattr(filetime, "tzinfo"):
+        if isinstance(filetime, datetime):
             return filetime
         # Convert Windows FILETIME (100-nanosecond intervals since 1601)
         if isinstance(filetime, int):
